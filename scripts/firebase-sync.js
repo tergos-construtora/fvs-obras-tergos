@@ -127,7 +127,146 @@ import {
     return JSON.parse(JSON.stringify(obj));
   }
 
-  function semFvsList(amb){ const { fvsList, ...resto } = amb; return resto; }
+  function semFvsList(amb){ const { fvsList, fvsRemovidas, ...resto } = amb; return resto; }
+
+  // ---------- uso simultâneo em vários aparelhos ----------
+  // Antes, cada salvamento reenviava a obra INTEIRA, com data "agora" em tudo. Um
+  // aparelho com a tela aberta havia algum tempo (cópia desatualizada) apagava, ao
+  // salvar, o que outro aparelho tinha lançado no meio-tempo. Agora:
+  //  1) cada FVS tem sua própria data de alteração (atualizadoEm), carimbada só quando
+  //     o conteúdo daquela FVS muda de fato;
+  //  2) ao receber um ambiente da nuvem, as FVS são mescladas uma a uma — vence a mais
+  //     recente, e uma FVS com edição ainda não salva neste aparelho nunca é trocada;
+  //  3) só é enviado para a nuvem o documento que realmente mudou;
+  //  4) FVS removidas deixam um registro (fvsRemovidas) para não "ressuscitarem".
+  function jsonEstavel(v){
+    if(v === null || v === undefined) return "null";
+    if(typeof v !== "object") return JSON.stringify(v);
+    if(Array.isArray(v)) return "[" + v.map(jsonEstavel).join(",") + "]";
+    return "{" + Object.keys(v).filter(k=>v[k] !== undefined).sort()
+      .map(k=>JSON.stringify(k) + ":" + jsonEstavel(v[k])).join(",") + "}";
+  }
+  function hashTexto(str){
+    let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+    for(let i = 0; i < str.length; i++){
+      const ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+  }
+  function semCarimbo(obj){ const { atualizadoEm, atualizadoPor, ...resto } = obj || {}; return resto; }
+  function hashConteudo(obj){ return hashTexto(jsonEstavel(semCarimbo(obj))); }
+
+  // Último conteúdo SALVO de cada FVS neste aparelho (persistido): permite saber se a
+  // FVS mudou desde o último salvamento e em qual ambiente ela estava.
+  const CHAVE_HASH_SALVO = "fvs_sync_hash_v1";
+  let hashSalvo = null;
+  try{ hashSalvo = JSON.parse(localStorage.getItem(CHAVE_HASH_SALVO) || "null"); }catch(e){ hashSalvo = null; }
+  function persistirHashSalvo(){ try{ localStorage.setItem(CHAVE_HASH_SALVO, JSON.stringify(hashSalvo)); }catch(e){} }
+  function percorrerAmbientes(fn){
+    for(const obra of (window.db.obras || []))
+      for(const pav of (obra.pavimentos || []))
+        for(const amb of window.todosAmbientesDoPavimento(pav)) fn(obra, amb);
+  }
+  if(!hashSalvo){
+    // primeira vez com esta versão: o estado atual vira a referência, SEM carimbar nada
+    // (senão um aparelho desatualizado passaria a "ganhar" de todos os outros).
+    hashSalvo = {};
+    try{
+      percorrerAmbientes((obra, amb)=> (amb.fvsList || []).forEach(f=>{
+        if(f.instId) hashSalvo[f.instId] = { h: hashConteudo(f), a: obra.id + "/" + amb.id };
+      }));
+    }catch(e){ /* sem dados ainda */ }
+    persistirHashSalvo();
+  }
+  function editadaSemSalvar(f){
+    const reg = f && f.instId && hashSalvo[f.instId];
+    return !!reg && reg.h !== hashConteudo(f);
+  }
+
+  // Roda a cada saveDB(): carimba as FVS que mudaram e registra as que foram removidas.
+  function carimbarAlteracoes(){
+    const agora = Date.now();
+    const email = usuarioAtual ? usuarioAtual.email : null;
+    const ambientesPorChave = {};
+    const vistas = new Set();
+    percorrerAmbientes((obra, amb)=>{
+      const chave = obra.id + "/" + amb.id;
+      ambientesPorChave[chave] = amb;
+      (amb.fvsList || []).forEach(f=>{
+        if(!f.instId) return;
+        vistas.add(f.instId);
+        const h = hashConteudo(f);
+        const reg = hashSalvo[f.instId];
+        if(!reg || reg.h !== h){
+          f.atualizadoEm = agora;
+          if(email) f.atualizadoPor = email;
+        }
+        hashSalvo[f.instId] = { h, a: chave };
+      });
+    });
+    Object.keys(hashSalvo).forEach(id=>{
+      if(vistas.has(id)) return;
+      const amb = ambientesPorChave[hashSalvo[id].a];
+      if(amb){ amb.fvsRemovidas = amb.fvsRemovidas || {}; amb.fvsRemovidas[id] = agora; }
+      delete hashSalvo[id];
+    });
+    persistirHashSalvo();
+  }
+
+  function substituirConteudo(destino, origem){
+    Object.keys(destino).forEach(k=>{ delete destino[k]; });
+    Object.assign(destino, cloneSeguro(origem));
+  }
+
+  // Mescla um ambiente vindo da nuvem no ambiente local, FVS por FVS. Devolve true se o
+  // resultado ficou diferente do que está na nuvem (ou seja, precisa reenviar).
+  function mesclarAmbiente(obraId, local, remoto){
+    const chave = obraId + "/" + local.id;
+    const removidas = Object.assign({}, local.fvsRemovidas || {});
+    Object.entries(remoto.fvsRemovidas || {}).forEach(([id, t])=>{ removidas[id] = Math.max(removidas[id] || 0, t || 0); });
+
+    const locais = new Map((local.fvsList || []).filter(f=>f.instId).map(f=>[f.instId, f]));
+    const remotas = new Map((remoto.fvsList || []).filter(f=>f.instId).map(f=>[f.instId, f]));
+    const ids = [...remotas.keys(), ...[...locais.keys()].filter(id=>!remotas.has(id))];
+    const resultado = [];
+    for(const id of ids){
+      const l = locais.get(id), r = remotas.get(id);
+      const lPendente = l && editadaSemSalvar(l);
+      let escolhida;
+      if(l && r){
+        if(lPendente || (l.atualizadoEm || 0) > (r.atualizadoEm || 0)) escolhida = l;
+        else { substituirConteudo(l, r); escolhida = l; hashSalvo[id] = { h: hashConteudo(l), a: chave }; }
+      } else if(l){
+        escolhida = l;
+      } else {
+        escolhida = cloneSeguro(r);
+        hashSalvo[id] = { h: hashConteudo(escolhida), a: chave };
+      }
+      const removidaEm = removidas[id];
+      if(removidaEm && removidaEm >= (escolhida.atualizadoEm || 0) && !lPendente){
+        delete hashSalvo[id];
+        continue;
+      }
+      resultado.push(escolhida);
+    }
+    // FVS sem instId (não deveria existir) ficam como estão
+    (local.fvsList || []).filter(f=>!f.instId).forEach(f=>resultado.push(f));
+
+    if((remoto.atualizadoEm || 0) > (local.atualizadoEm || 0)){
+      Object.keys(remoto).forEach(k=>{ if(k !== "fvsList" && k !== "fvsRemovidas") local[k] = cloneSeguro(remoto[k]); });
+    }
+    local.fvsList = resultado;
+    if(Object.keys(removidas).length) local.fvsRemovidas = removidas;
+    persistirHashSalvo();
+    return hashConteudo(local) !== hashConteudo(remoto);
+  }
+
+  // O que a nuvem tem de cada documento (hash do conteúdo, sem as datas). Só envia o
+  // que estiver diferente disso.
+  const hashNuvem = {};
 
   function pavimentoLeve(pav){
     const limpo = cloneSeguro(pav);
@@ -200,13 +339,18 @@ import {
     if(!usuarioAtual) return;
     estadoSync = "sincronizando";
     const falhas = [];
+    const email = usuarioAtual.email;
 
-    obra.atualizadoEm = Date.now();
-    obra.atualizadoPor = usuarioAtual.email;
     try{
       const obraLeve = cloneSeguro(obra);
       obraLeve.pavimentos = (obraLeve.pavimentos || []).map(p=>({ id: p.id, nome: p.nome }));
-      await setDoc(doc(firestoreDb, "obras", obra.id), obraLeve);
+      const h = hashConteudo(obraLeve);
+      if(hashNuvem["o/" + obra.id] !== h){
+        obra.atualizadoEm = obraLeve.atualizadoEm = Date.now();
+        obra.atualizadoPor = obraLeve.atualizadoPor = email;
+        await setDoc(doc(firestoreDb, "obras", obra.id), obraLeve);
+        hashNuvem["o/" + obra.id] = h;
+      }
       idsRemotosConhecidos.add(obra.id);
     }catch(e){
       console.warn("Falha ao enviar obra:", obra.nome, e);
@@ -214,10 +358,15 @@ import {
     }
 
     for(const pav of (obra.pavimentos || [])){
-      pav.atualizadoEm = Date.now();
-      pav.atualizadoPor = usuarioAtual.email;
       try{
-        await setDoc(doc(firestoreDb, "obras", obra.id, "pavimentos", pav.id), pavimentoLeve(pav));
+        const leve = pavimentoLeve(pav);
+        const h = hashConteudo(leve);
+        if(hashNuvem["p/" + obra.id + "/" + pav.id] !== h){
+          pav.atualizadoEm = leve.atualizadoEm = Date.now();
+          pav.atualizadoPor = leve.atualizadoPor = email;
+          await setDoc(doc(firestoreDb, "obras", obra.id, "pavimentos", pav.id), leve);
+          hashNuvem["p/" + obra.id + "/" + pav.id] = h;
+        }
         pavimentosRemotosConhecidos.add(obra.id + "/" + pav.id);
       }catch(e){
         console.warn("Falha ao enviar pavimento:", pav.nome, e);
@@ -225,10 +374,15 @@ import {
       }
 
       for(const amb of window.todosAmbientesDoPavimento(pav)){
-        amb.atualizadoEm = Date.now();
-        amb.atualizadoPor = usuarioAtual.email;
         try{
-          await setDoc(doc(firestoreDb, "obras", obra.id, "ambientes", amb.id), cloneSeguro(amb));
+          const copia = cloneSeguro(amb);
+          const h = hashConteudo(copia);
+          if(hashNuvem["a/" + obra.id + "/" + amb.id] !== h){
+            amb.atualizadoEm = copia.atualizadoEm = Date.now();
+            amb.atualizadoPor = copia.atualizadoPor = email;
+            await setDoc(doc(firestoreDb, "obras", obra.id, "ambientes", amb.id), copia);
+            hashNuvem["a/" + obra.id + "/" + amb.id] = h;
+          }
           ambientesRemotosConhecidos.add(obra.id + "/" + amb.id);
         }catch(e){
           console.warn("Falha ao enviar ambiente:", amb.nome, e);
@@ -237,6 +391,7 @@ import {
       }
     }
 
+    salvarLocal();
     estadoSync = falhas.length ? "erro" : "sincronizado";
     if(falhas.length){
       alert("Aviso de sincronização: " + falhas.length + " item(ns) não foram enviados para a nuvem agora.\n\n" + falhas.slice(0,5).join("\n\n") + (falhas.length>5 ? "\n\n(+" + (falhas.length-5) + " outros)" : "") + "\n\nOs dados continuam salvos neste aparelho. O resto foi enviado normalmente — tire um print e me mande se isso persistir.");
@@ -277,10 +432,22 @@ import {
     }catch(e){ console.warn("Falha ao excluir pavimento na nuvem:", e); }
   };
 
-  function agendarSincronizacao(dbObj){
+  // Só envia depois de receber o estado da nuvem (os três primeiros "snapshots"):
+  // enviar antes disso poderia sobrescrever com uma cópia desatualizada deste aparelho.
+  let envioPendente = false, enviando = false;
+  function prontoParaEnviar(){ return primeiroSnapObras && primeiroSnapPavimentos && primeiroSnapAmbientes; }
+  function agendarSincronizacao(){
     if(!usuarioAtual) return;
     clearTimeout(timerSync);
-    timerSync = setTimeout(()=>enviarObras(dbObj.obras || []), 800);
+    timerSync = setTimeout(async ()=>{
+      if(!prontoParaEnviar() || enviando){ envioPendente = true; return; }
+      enviando = true; envioPendente = false;
+      try{ await enviarObras(window.db.obras || []); }
+      finally{
+        enviando = false;
+        if(envioPendente) agendarSincronizacao();
+      }
+    }, 800);
   }
 
   // A checagem de completude (tentarVerificacaoCompleta) só olha pavimentos/ambientes,
@@ -294,8 +461,7 @@ import {
     for(const obra of (window.db.obras || [])){
       try{
         if(await garantirFotosNaNuvem(obra)){
-          saveDBOriginal(window.db);
-          await enviarObra(obra);
+          salvarComCarimbo(window.db);
         }
       }catch(e){ console.warn("Falha ao migrar fotos antigas da obra \"" + obra.nome + "\":", e); }
     }
@@ -310,17 +476,13 @@ import {
   // criadas antes do login quanto tentativas anteriores que pararam no meio (ex.: por
   // causa de uma regra do Firestore desatualizada) sem precisar a pessoa mandar de
   // novo manualmente.
+  // Depois que os três listeners entregaram a primeira leitura, envia o que este aparelho
+  // tem de diferente da nuvem (obras criadas antes do login, envios que falharam, edições
+  // feitas sem internet). O que já está igual na nuvem é pulado.
   function tentarVerificacaoCompleta(){
-    if(verificacaoCompletaFeita || !primeiroSnapObras || !primeiroSnapPavimentos || !primeiroSnapAmbientes) return;
+    if(verificacaoCompletaFeita || !prontoParaEnviar()) return;
     verificacaoCompletaFeita = true;
-    const incompletas = (window.db.obras || []).filter(obra=>{
-      if(!idsRemotosConhecidos.has(obra.id)) return true;
-      return (obra.pavimentos || []).some(pav=>{
-        if(!pavimentosRemotosConhecidos.has(obra.id + "/" + pav.id)) return true;
-        return window.todosAmbientesDoPavimento(pav).some(amb=>!ambientesRemotosConhecidos.has(obra.id + "/" + amb.id));
-      });
-    });
-    if(incompletas.length) enviarObras(incompletas);
+    agendarSincronizacao();
   }
 
   // Documentos que chegam antes do "pai" correspondente existir localmente (corrida
@@ -339,7 +501,11 @@ import {
       if(orf.obraId !== obraId) return true; // de outra obra — mantém na fila, não é a vez dele ainda
       const obra = window.db.obras.find(o=>o.id === obraId);
       const alvo = obra && localizarAmbiente(obra, orf.amb.id);
-      if(alvo){ Object.assign(alvo, orf.amb); return false; } // aplicado — sai da fila
+      if(alvo){
+        hashNuvem["a/" + obraId + "/" + orf.amb.id] = hashConteudo(orf.amb);
+        if(mesclarAmbiente(obraId, alvo, orf.amb)) agendarSincronizacao();
+        return false;
+      } // aplicado — sai da fila
       return true; // o pavimento desse ambiente ainda não chegou — mantém na fila pra tentar de novo
     });
   }
@@ -392,13 +558,14 @@ import {
   async function hidratarObraCompleta(obra){
     try{
       const pavsSnap = await getDocs(collection(firestoreDb, "obras", obra.id, "pavimentos"));
-      pavsSnap.forEach(d=>{ pavimentosRemotosConhecidos.add(obra.id + "/" + d.id); mesclarPavimentoLeve(obra, d.data()); });
+      pavsSnap.forEach(d=>{ pavimentosRemotosConhecidos.add(obra.id + "/" + d.id); hashNuvem["p/" + obra.id + "/" + d.id] = hashConteudo(d.data()); mesclarPavimentoLeve(obra, d.data()); });
 
       const ambsSnap = await getDocs(collection(firestoreDb, "obras", obra.id, "ambientes"));
       ambsSnap.forEach(d=>{
         ambientesRemotosConhecidos.add(obra.id + "/" + d.id);
         const alvo = localizarAmbiente(obra, d.id);
-        if(alvo) Object.assign(alvo, d.data());
+        hashNuvem["a/" + obra.id + "/" + d.id] = hashConteudo(d.data());
+        if(alvo && mesclarAmbiente(obra.id, alvo, d.data())) agendarSincronizacao();
       });
 
       salvarLocal();
@@ -428,6 +595,7 @@ import {
           return;
         }
         idsRemotosConhecidos.add(remota.id);
+        hashNuvem["o/" + remota.id] = hashConteudo(remota);
         let local = window.db.obras.find(o=>o.id === remota.id);
         if(!local){
           local = Object.assign({}, remota, { pavimentos: [] });
@@ -485,6 +653,7 @@ import {
           return;
         }
         pavimentosRemotosConhecidos.add(chave);
+        hashNuvem["p/" + chave] = hashConteudo(remotoPav);
         if(!obra){ pavimentosOrfaos.push({ obraId, pav: remotoPav }); return; }
         const localPav = obra.pavimentos.find(p=>p.id === remotoPav.id);
         if(!localPav || (remotoPav.atualizadoEm || 0) > (localPav.atualizadoEm || 0)){
@@ -500,7 +669,7 @@ import {
     });
 
     desinscreverAmbientes = onSnapshot(collectionGroup(firestoreDb, "ambientes"), (snapshot)=>{
-      let mudouLocal = false;
+      let mudouLocal = false, precisaReenviar = false;
       snapshot.docChanges().forEach((mudanca)=>{
         const remotoAmb = mudanca.doc.data();
         const obraId = mudanca.doc.ref.parent.parent.id;
@@ -515,12 +684,13 @@ import {
         if(!obra){ ambientesOrfaos.push({ obraId, amb: remotoAmb }); return; }
         const local = localizarAmbiente(obra, remotoAmb.id);
         if(!local){ ambientesOrfaos.push({ obraId, amb: remotoAmb }); return; }
-        if((remotoAmb.atualizadoEm || 0) > (local.atualizadoEm || 0)){
-          Object.assign(local, remotoAmb);
-          mudouLocal = true;
-        }
+        hashNuvem["a/" + obraId + "/" + remotoAmb.id] = hashConteudo(remotoAmb);
+        const antes = hashConteudo(local);
+        if(mesclarAmbiente(obraId, local, remotoAmb)) precisaReenviar = true;
+        if(hashConteudo(local) !== antes) mudouLocal = true;
       });
       if(mudouLocal){ salvarLocal(); if(typeof window.render === "function") window.render(); }
+      if(precisaReenviar) agendarSincronizacao();
       primeiroSnapAmbientes = true;
       tentarVerificacaoCompleta();
     }, (erro)=>{
@@ -542,6 +712,8 @@ import {
     primeiroSnapAmbientes = false;
     verificacaoCompletaFeita = false;
     migracaoFotosFeita = false;
+    envioPendente = false;
+    Object.keys(hashNuvem).forEach(k=>{ delete hashNuvem[k]; });
   }
 
   // ---------- tela de login ----------
@@ -635,9 +807,11 @@ import {
   // Ponto único: toda chamada a saveDB() (usada em ~40 lugares do app) passa a também
   // agendar o envio para a nuvem, sem precisar mexer em cada lugar separadamente.
   const saveDBOriginal = window.saveDB;
-  window.saveDB = function(dbObj){
+  function salvarComCarimbo(dbObj){
+    try{ carimbarAlteracoes(); }catch(e){ console.warn("Falha ao registrar alterações:", e); }
     const ok = saveDBOriginal(dbObj);
-    if(ok) agendarSincronizacao(dbObj);
+    if(ok) agendarSincronizacao();
     return ok;
-  };
+  }
+  window.saveDB = salvarComCarimbo;
 })();
