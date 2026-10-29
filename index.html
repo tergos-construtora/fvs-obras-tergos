@@ -3669,12 +3669,39 @@ function dataHoraAtual(){
   return new Date().toLocaleString("pt-BR");
 }
 
+// Nos relatórios, verificações marcadas como "Não aplicável" (N/A) ficam de fora — tanto
+// itens quanto subitens. Aparecem só as conformes, não conformes, com comentários
+// (parcial) e pendentes. A numeração dos itens continua a mesma do app, para facilitar
+// a conferência (ex.: se o item 3 for N/A, o relatório mostra 1, 2, 4...).
 function subitensHtmlRelatorio(item){
   if(!item.subitens || !item.subitens.length) return "";
-  return `<ul class="rel-subitens">${item.subitens.map(sub=>{
+  const visiveis = item.subitens.filter(sub=>(sub.status || (sub.feito ? "ok" : "pend")) !== "na");
+  if(!visiveis.length) return "";
+  return `<ul class="rel-subitens">${visiveis.map(sub=>{
     const st = sub.status || (sub.feito ? "ok" : "pend");
     return `<li>${escapeHtml(sub.texto)} <span class="rel-status ${st}">${STATUS_LABEL[st]}</span></li>`;
   }).join("")}</ul>`;
+}
+
+function itensFvsHtmlRelatorio(fvsInst){
+  let html = "";
+  let mostrados = 0;
+  fvsInst.itens.forEach((item, idx)=>{
+    const st = item.status || "pend";
+    if(st === "na") return;
+    mostrados++;
+    html += `<div class="rel-item">
+      ${idx+1}. ${escapeHtml(item.texto)}
+      <span class="rel-status ${st}">${STATUS_LABEL[st]}</span>
+      ${subitensHtmlRelatorio(item)}
+      ${item.obs? `<div class="rel-obs"><b>Obs.:</b> ${escapeHtml(item.obs)}</div>` : ""}
+      ${fotosHtmlRelatorio(fotosDoItem(item))}
+    </div>`;
+  });
+  if(!mostrados && fvsInst.itens.length){
+    html += `<div class="rel-obs">Todos os itens desta FVS foram marcados como não aplicáveis.</div>`;
+  }
+  return html;
 }
 
 function fotosHtmlRelatorio(refs){
@@ -3838,16 +3865,7 @@ function exportarRelatorioAmbiente(obra, pav, amb, unid, cat){
     html += `<div class="rel-fvs-bloco">
       <h2>${escapeHtml(fvsInst.codigo)} / ${escapeHtml(fvsInst.nome)}</h2>
       <div class="rel-normas"><b>Normas de referência:</b> ${fvsInst.normas.map(escapeHtml).join(" · ")}</div>`;
-    fvsInst.itens.forEach((item, idx)=>{
-      const st = item.status || "pend";
-      html += `<div class="rel-item">
-        ${idx+1}. ${escapeHtml(item.texto)}
-        <span class="rel-status ${st}">${STATUS_LABEL[st]}</span>
-        ${subitensHtmlRelatorio(item)}
-        ${item.obs? `<div class="rel-obs"><b>Obs.:</b> ${escapeHtml(item.obs)}</div>` : ""}
-        ${fotosHtmlRelatorio(fotosDoItem(item))}
-      </div>`;
-    });
+    html += itensFvsHtmlRelatorio(fvsInst);
     html += `</div>`;
   });
 
@@ -3941,16 +3959,7 @@ async function exportarRelatorioCategoriaEstrutura(obra, pav, cat){
       html += `<div class="rel-fvs-bloco">
         <h2>${escapeHtml(fvsInst.codigo)} / ${escapeHtml(fvsInst.nome)}</h2>
         <div class="rel-normas"><b>Normas de referência:</b> ${fvsInst.normas.map(escapeHtml).join(" · ")}</div>`;
-      fvsInst.itens.forEach((item, idx)=>{
-        const st = item.status || "pend";
-        html += `<div class="rel-item">
-          ${idx+1}. ${escapeHtml(item.texto)}
-          <span class="rel-status ${st}">${STATUS_LABEL[st]}</span>
-        ${subitensHtmlRelatorio(item)}
-          ${item.obs? `<div class="rel-obs"><b>Obs.:</b> ${escapeHtml(item.obs)}</div>` : ""}
-          ${fotosHtmlRelatorio(fotosDoItem(item))}
-        </div>`;
-      });
+      html += itensFvsHtmlRelatorio(fvsInst);
       html += `</div>`;
     });
   });
