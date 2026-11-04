@@ -182,9 +182,14 @@
   .rel-header .meta{font-size:12px;color:#444;}
   .rel-header .rel-logo{width:72px;height:72px;object-fit:contain;flex-shrink:0;}
   .rel-fvs-bloco{margin-bottom:14px;}
-  .rel-fvs-bloco h2{font-size:15px;background:#eee;padding:6px 10px;margin:0 0 8px 0;border-radius:4px;}
-  .rel-normas{font-size:11px;color:#444;margin-bottom:8px;}
-  .rel-item{border:1px solid #ccc;border-radius:6px;padding:8px 10px;margin-bottom:6px;font-size:12.5px;page-break-inside:avoid;}
+  .rel-fvs-bloco h2{font-size:15px;background:#eee;padding:6px 10px;margin:0 0 8px 0;border-radius:4px;page-break-after:avoid;break-after:avoid;}
+  .rel-normas{font-size:11px;color:#444;margin-bottom:8px;page-break-after:avoid;break-after:avoid;}
+  /* Aproveitamento da página: um item pode continuar na página seguinte (antes ele
+     pulava inteiro para a próxima página e deixava um buraco). O que não pode ser
+     cortado ao meio fica protegido: a linha do item, cada subitem e a fileira de fotos.
+     Títulos nunca ficam sozinhos no pé da página. */
+  .rel-item{border:1px solid #ccc;border-radius:6px;padding:8px 10px;margin-bottom:6px;font-size:12.5px;break-inside:auto;-webkit-box-decoration-break:clone;box-decoration-break:clone;}
+  .rel-item-topo{page-break-inside:avoid;break-inside:avoid;page-break-after:avoid;break-after:avoid;}
   .rel-item .rel-status{font-weight:700;padding:1px 8px;border-radius:10px;font-size:11px;display:inline-block;margin-left:6px;}
   .rel-item .rel-status.ok{background:#e8f8ee;color:#16a34a;}
   .rel-item .rel-status.nc{background:#fdeceb;color:#dc2626;}
@@ -193,11 +198,11 @@
   .rel-item .rel-status.parcial{background:#e0f4f8;color:#0891b2;}
   .rel-item .rel-obs{color:#444;margin-top:4px;}
   .rel-subitens{list-style:none;margin:6px 0 0 4px;padding:0;font-size:11.5px;}
-  .rel-subitens li{margin-bottom:3px;}
-  .rel-fotos{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;justify-content:center;}
-  .rel-item .rel-foto{width:auto;height:150px;max-width:100%;object-fit:cover;border:1px solid #ccc;}
+  .rel-subitens li{margin-bottom:3px;page-break-inside:avoid;break-inside:avoid;}
+  .rel-fotos{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;justify-content:center;page-break-inside:avoid;break-inside:avoid;}
+  .rel-item .rel-foto{width:auto;height:125px;max-width:100%;object-fit:cover;border:1px solid #ccc;}
   .rel-fotos .rel-foto{flex:0 1 auto;}
-  .rel-elemento-titulo{font-size:16px;margin:0 0 12px 0;padding-bottom:6px;border-bottom:1px solid #999;page-break-before:always;}
+  .rel-elemento-titulo{font-size:16px;margin:16px 0 10px 0;padding-bottom:6px;border-bottom:1px solid #999;page-break-after:avoid;break-after:avoid;}
   .rel-anexos-secao{page-break-before:always;break-before:page;}
   .rel-anexos-titulo{font-size:16px;margin:0 0 4mm 0;padding-bottom:6px;border-bottom:1px solid #999;}
   .rel-anexo-folha{display:flex;flex-direction:column;gap:3mm;overflow:hidden;page-break-inside:avoid;break-inside:avoid;}
@@ -206,7 +211,7 @@
   .rel-anexo-titulo{font-size:11px;font-weight:700;margin:0 0 1.5mm;color:#333;height:4mm;line-height:4mm;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
   .rel-anexo-img{flex:1 1 auto;min-height:0;width:100%;height:100%;object-fit:contain;object-position:top center;display:block;}
   .rel-anexo-erro{font-size:12px;color:#c00;margin:0;}
-  .rel-elemento-titulo:first-of-type{page-break-before:avoid;}
+  .rel-elemento-titulo:first-of-type{margin-top:0;}
   .rel-table{width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:16px;}
   .rel-table th, .rel-table td{border:1px solid #ccc;padding:6px 8px;text-align:left;}
   .rel-table th{background:#eee;}
@@ -3691,8 +3696,8 @@ function itensFvsHtmlRelatorio(fvsInst){
     if(st === "na") return;
     mostrados++;
     html += `<div class="rel-item">
-      ${idx+1}. ${escapeHtml(item.texto)}
-      <span class="rel-status ${st}">${STATUS_LABEL[st]}</span>
+      <div class="rel-item-topo">${idx+1}. ${escapeHtml(item.texto)}
+      <span class="rel-status ${st}">${STATUS_LABEL[st]}</span></div>
       ${subitensHtmlRelatorio(item)}
       ${item.obs? `<div class="rel-obs"><b>Obs.:</b> ${escapeHtml(item.obs)}</div>` : ""}
       ${fotosHtmlRelatorio(fotosDoItem(item))}
