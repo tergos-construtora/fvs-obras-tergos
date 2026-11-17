@@ -436,16 +436,6 @@ const FVS_CATALOGO = [
       "Nível final do forro conferido em toda a área"
     ]
   },
-  { codigo:"FVS-30", nome:"Forro de Gesso em Placas", rev:"00",
-    normas:["NBR 16382:2015 - Placas de gesso para forro - Requisitos","NBR 16591:2017 - Execução de forro autoportante com placas de gesso - Procedimento"],
-    itens:[
-      "Estrutura de sustentação (arames/tirantes) nivelada e firme",
-      "Encaixe e alinhamento das placas de gesso",
-      "Tratamento de juntas com massa e fita",
-      "Recortes para luminárias e pontos de instalação conferidos",
-      "Nível final do forro e platibandas/sancas conferidos"
-    ]
-  },
   { codigo:"FVS-31", nome:"Shaft Drywall", rev:"00",
     normas:["NBR 15758-1:2009 - Sistemas construtivos em chapas de gesso para drywall - Parte 1: Requisitos para sistemas usados como paredes (norma cancelada em 09/2025, revisão em consulta nacional — verificar edição vigente)","NBR 14715-1:2021 - Chapas de gesso para drywall - Requisitos"],
     itens:[
