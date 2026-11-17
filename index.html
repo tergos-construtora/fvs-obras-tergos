@@ -1977,9 +1977,25 @@ function renderFornecedorDetalhe(app){
 }
 
 // ---------- LISTAGEM DE AMBIENTES (compartilhada entre Pavimento e Unidade) ----------
+// Ordem de exibição: elementos/ambientes/unidades com número no nome (P1, V301, Apto 203...)
+// aparecem sempre em ordem crescente, não na ordem em que foram cadastrados. Itens sem
+// número (Sala, Cozinha...) mantêm a posição em que foram cadastrados. Só muda a exibição
+// (telas e relatórios) — a ordem gravada nos dados continua a mesma.
+const _colacaoNumerica = new Intl.Collator("pt-BR", { numeric:true, sensitivity:"base" });
+function ordenarNumerados(lista){
+  const arr = (lista || []).slice();
+  const temNumero = item=>/\d/.test((item && item.nome) || "");
+  const posicoes = [];
+  const numerados = [];
+  arr.forEach((item, i)=>{ if(temNumero(item)){ posicoes.push(i); numerados.push(item); } });
+  numerados.sort((a, b)=>_colacaoNumerica.compare(a.nome.trim(), b.nome.trim()));
+  posicoes.forEach((pos, k)=>{ arr[pos] = numerados[k]; });
+  return arr;
+}
+
 function renderListaAmbientes(main, container, montarRota, mensagemVazia, campo, iconeNome){
   campo = campo || "ambientes";
-  const lista = container[campo] || [];
+  const lista = ordenarNumerados(container[campo]);
   if(!lista.length){
     const div = document.createElement("div");
     div.className="empty";
@@ -2065,7 +2081,7 @@ function renderPavimento(app){
 
   if(pav.unidades.length){
     main.appendChild(subtituloSecao("Unidades", pav.estrutura.length?20:4));
-    pav.unidades.forEach(unid=>{
+    ordenarNumerados(pav.unidades).forEach(unid=>{
       const p = calcProgressoFvsList(unid.ambientes.flatMap(a=>a.fvsList));
       const ncU = contarNC(unid.ambientes.flatMap(a=>a.fvsList));
       const div = document.createElement("div");
@@ -3951,9 +3967,9 @@ function exportarRelatorioPavimento(obra, pav){
     <table class="rel-table">
       <tr><th>Unidade</th><th>Ambiente</th><th>Serviços (FVS)</th><th>Progresso</th><th>Não conf.</th></tr>`;
 
-  const linhas = pav.ambientes.map(amb=>({unidade:"—", amb}))
-    .concat(pav.estrutura.flatMap(cat=>cat.elementos.map(amb=>({unidade:`Estrutura: ${cat.nome}`, amb}))))
-    .concat(pav.unidades.flatMap(unid=>unid.ambientes.map(amb=>({unidade:unid.nome, amb}))));
+  const linhas = ordenarNumerados(pav.ambientes).map(amb=>({unidade:"—", amb}))
+    .concat(pav.estrutura.flatMap(cat=>ordenarNumerados(cat.elementos).map(amb=>({unidade:`Estrutura: ${cat.nome}`, amb}))))
+    .concat(ordenarNumerados(pav.unidades).flatMap(unid=>ordenarNumerados(unid.ambientes).map(amb=>({unidade:unid.nome, amb}))));
   if(!linhas.length){
     html += `<tr><td colspan="5">Nenhum ambiente cadastrado</td></tr>`;
   } else {
@@ -4005,7 +4021,7 @@ async function exportarRelatorioCategoriaEstrutura(obra, pav, cat){
   if(!cat.elementos.length){
     html += `<p>Nenhum elemento cadastrado nesta categoria.</p>`;
   }
-  cat.elementos.forEach(elem=>{
+  ordenarNumerados(cat.elementos).forEach(elem=>{
     html += `<h2 class="rel-elemento-titulo">${escapeHtml(cat.nome)} — ${escapeHtml(elem.nome)}</h2>`;
     if(!elem.fvsList.length){
       html += `<p>Nenhuma FVS aplicada a este elemento.</p>`;
@@ -4048,9 +4064,9 @@ function exportarRelatorioObra(obra){
   obra.pavimentos.forEach(pav=>{
     if(!pav.unidades) pav.unidades = [];
     garantirEstrutura(pav);
-    const linhas = pav.ambientes.map(amb=>({unidade:"—", amb}))
-      .concat(pav.estrutura.flatMap(cat=>cat.elementos.map(amb=>({unidade:`Estrutura: ${cat.nome}`, amb}))))
-      .concat(pav.unidades.flatMap(unid=>unid.ambientes.map(amb=>({unidade:unid.nome, amb}))));
+    const linhas = ordenarNumerados(pav.ambientes).map(amb=>({unidade:"—", amb}))
+      .concat(pav.estrutura.flatMap(cat=>ordenarNumerados(cat.elementos).map(amb=>({unidade:`Estrutura: ${cat.nome}`, amb}))))
+      .concat(ordenarNumerados(pav.unidades).flatMap(unid=>ordenarNumerados(unid.ambientes).map(amb=>({unidade:unid.nome, amb}))));
     if(!linhas.length){
       html += `<tr><td>${escapeHtml(pav.nome)}</td><td colspan="5">Nenhum ambiente cadastrado</td></tr>`;
       return;
