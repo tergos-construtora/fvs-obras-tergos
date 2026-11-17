@@ -109,6 +109,46 @@ import {
       return null;
     }
   };
+  // ---------- modelo 3D (IFC) ----------
+  // Guardado comprimido (gzip): arquivos IFC são texto e costumam ficar 5 a 10 vezes menores.
+  function caminhoIfc(obraId, comprimido){
+    return "obras/" + obraId + "/modelo/modelo.ifc" + (comprimido ? ".gz" : "");
+  }
+  async function transformarBytes(bytes, stream){
+    const s = new Blob([bytes]).stream().pipeThrough(stream);
+    return new Uint8Array(await new Response(s).arrayBuffer());
+  }
+  window.enviarIfcNuvem = async function(obraId, bytes){
+    if(!usuarioAtual) throw new Error("sem login");
+    if(typeof CompressionStream !== "undefined"){
+      const gz = await transformarBytes(bytes, new CompressionStream("gzip"));
+      await uploadBytes(storageRef(storage, caminhoIfc(obraId, true)), gz, { contentType: "application/gzip" });
+    } else {
+      await uploadBytes(storageRef(storage, caminhoIfc(obraId, false)), bytes, { contentType: "application/octet-stream" });
+    }
+  };
+  window.buscarIfcNuvem = async function(obraId){
+    if(!usuarioAtual) return null;
+    for(const comprimido of [true, false]){
+      try{
+        const url = await getDownloadURL(storageRef(storage, caminhoIfc(obraId, comprimido)));
+        const resp = await fetch(url);
+        if(!resp.ok) throw new Error("fetch respondeu " + resp.status);
+        const bytes = new Uint8Array(await resp.arrayBuffer());
+        return comprimido ? await transformarBytes(bytes, new DecompressionStream("gzip")) : bytes;
+      }catch(e){
+        if(!(e && e.code === "storage/object-not-found")) console.warn("Falha ao buscar modelo IFC da nuvem:", e);
+      }
+    }
+    return null;
+  };
+  window.excluirIfcNuvem = async function(obraId){
+    if(!usuarioAtual) return;
+    for(const comprimido of [true, false]){
+      try{ await deleteObject(storageRef(storage, caminhoIfc(obraId, comprimido))); }catch(e){ /* já não existe */ }
+    }
+  };
+
   window.excluirFotoNuvem = async function(obraId, shortId){
     if(!usuarioAtual) return;
     try{ await deleteObject(storageRef(storage, caminhoFoto(obraId, shortId))); }catch(e){ /* já não existe */ }
@@ -609,7 +649,7 @@ import {
           // ausente lá (ex.: um aparelho que nunca teve a foto e salvou outra coisa)
           // não pode apagar o valor que já existia aqui — isso já causou a foto de
           // capa e a logo da obra sumirem sem ninguém ter mexido nelas.
-          ["nome","endereco","foto","fotoCapa","fotoCapaPos","fornecedores","ifcStoreyMap"].forEach(campo=>{
+          ["nome","endereco","foto","fotoCapa","fotoCapaPos","fornecedores","ifcStoreyMap","ifcVersao"].forEach(campo=>{
             if(remota[campo] !== undefined) local[campo] = remota[campo];
           });
           local.atualizadoEm = remota.atualizadoEm;
