@@ -305,16 +305,116 @@ function icon(name){
 
 const STORAGE_KEY = "qualitab_obra_v1";
 
+// ---------- armazenamento dos dados no aparelho ----------
+// Os dados (obras, FVS, itens, subitens) ficam no IndexedDB, que não tem o limite de
+// ~5 MB do localStorage. Uma obra grande (centenas de FVS com subitens) passa desse
+// limite e o navegador recusava salvar. O localStorage continua sendo usado como cópia
+// rápida enquanto os dados couberem nele; quando não cabem, a cópia de lá é apagada e
+// vale só a do IndexedDB. Na abertura, vale a cópia salva por último.
+const STORAGE_KEY_SALVO_EM = STORAGE_KEY + "_salvoEm";
+const DADOS_DB_NAME = "fvs-obras-dados";
+const DADOS_DB_STORE = "dados";
+let _dadosDBPromise = null;
+function abrirDadosDB(){
+  if(!_dadosDBPromise){
+    _dadosDBPromise = new Promise((resolve, reject)=>{
+      const req = indexedDB.open(DADOS_DB_NAME, 1);
+      req.onupgradeneeded = ()=>req.result.createObjectStore(DADOS_DB_STORE);
+      req.onsuccess = ()=>resolve(req.result);
+      req.onerror = ()=>reject(req.error);
+    });
+    _dadosDBPromise.catch(()=>{ _dadosDBPromise = null; });
+  }
+  return _dadosDBPromise;
+}
+async function lerDadosIdb(){
+  const idb = await abrirDadosDB();
+  return new Promise((res, rej)=>{
+    const req = idb.transaction(DADOS_DB_STORE, "readonly").objectStore(DADOS_DB_STORE).get(STORAGE_KEY);
+    req.onsuccess = ()=>res(req.result || null);
+    req.onerror = ()=>rej(req.error);
+  });
+}
+async function gravarDadosIdb(registro){
+  const idb = await abrirDadosDB();
+  return new Promise((res, rej)=>{
+    const tx = idb.transaction(DADOS_DB_STORE, "readwrite");
+    tx.objectStore(DADOS_DB_STORE).put(registro, STORAGE_KEY);
+    tx.oncomplete = ()=>res(true);
+    tx.onerror = ()=>rej(tx.error);
+    tx.onabort = ()=>rej(tx.error);
+  });
+}
+// Grava sempre a versão mais recente, sem gravações simultâneas: se chegar um novo
+// salvamento enquanto outro está em andamento, o mais novo é gravado logo em seguida.
+let _gravacaoPendente = null, _gravando = false, _avisoFalhaMostrado = false;
+async function processarGravacaoIdb(){
+  if(_gravando) return;
+  _gravando = true;
+  try{
+    while(_gravacaoPendente){
+      const registro = _gravacaoPendente; _gravacaoPendente = null;
+      try{ await gravarDadosIdb(registro); }
+      catch(e){
+        console.warn("Falha ao gravar dados no IndexedDB:", e);
+        if(registro.soNoIdb && !_avisoFalhaMostrado){
+          _avisoFalhaMostrado = true;
+          alert("NÃO FOI POSSÍVEL SALVAR NESTE APARELHO: o armazenamento do navegador está cheio ou bloqueado.\n\nSe estiver conectado, as alterações continuam sendo enviadas para a nuvem. Libere espaço no aparelho e abra o app de novo.");
+        }
+      }
+    }
+  } finally { _gravando = false; }
+}
 function loadDB(){
   try{ return JSON.parse(localStorage.getItem(STORAGE_KEY)) || { obras: [] }; }
   catch(e){ return { obras: [] }; }
 }
-function saveDB(db){
-  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(db)); return true; }
-  catch(e){
-    alert("NÃO FOI POSSÍVEL SALVAR: o espaço de armazenamento do aparelho está cheio (as fotos ocupam muito espaço).\n\nAntes de continuar: toque em 💾 Exportar backup e guarde o arquivo. Depois remova fotos desnecessárias.");
-    return false;
+// Salva no aparelho (sem disparar a sincronização com a nuvem).
+function persistirDadosLocais(db){
+  const salvoEm = Date.now();
+  let json;
+  try{ json = JSON.stringify(db); }catch(e){ return false; }
+  let soNoIdb = false;
+  try{
+    localStorage.setItem(STORAGE_KEY, json);
+  }catch(e){
+    // Não coube no localStorage: apaga a cópia antiga de lá (para não ser lida por engano
+    // e para liberar espaço) e fica valendo só a do IndexedDB.
+    soNoIdb = true;
+    try{ localStorage.removeItem(STORAGE_KEY); }catch(e2){}
   }
+  try{ localStorage.setItem(STORAGE_KEY_SALVO_EM, String(salvoEm)); }catch(e){}
+  _gravacaoPendente = { salvoEm, json, soNoIdb };
+  processarGravacaoIdb();
+  return true;
+}
+window.persistirDadosLocais = persistirDadosLocais;
+function saveDB(db){
+  return persistirDadosLocais(db);
+}
+// Na abertura: se a cópia do IndexedDB for mais recente que a do localStorage (ou se a do
+// localStorage não existir), ela passa a valer. Os dados são trocados "por dentro" do
+// objeto db, para todas as partes do app continuarem apontando para o mesmo objeto.
+async function carregarDadosMaisRecentes(){
+  try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{}); }catch(e){}
+  let registro = null;
+  try{ registro = await lerDadosIdb(); }catch(e){ return false; }
+  const salvoLocal = Number(localStorage.getItem(STORAGE_KEY_SALVO_EM) || 0);
+  const temLocal = localStorage.getItem(STORAGE_KEY) !== null;
+  if(registro && registro.json && (!temLocal || (registro.salvoEm || 0) > salvoLocal)){
+    try{
+      const dados = JSON.parse(registro.json);
+      Object.keys(db).forEach(k=>{ delete db[k]; });
+      Object.assign(db, dados);
+      if(!db.obras) db.obras = [];
+      return true;
+    }catch(e){ console.warn("Cópia do IndexedDB ilegível:", e); }
+  }
+  if(!registro && temLocal){
+    // Primeira abertura com esta versão: copia os dados atuais para o IndexedDB.
+    persistirDadosLocais(db);
+  }
+  return false;
 }
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 
@@ -4134,7 +4234,13 @@ function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
 
-(async ()=>{
+window.fvsDadosProntos = (async ()=>{
+  try{
+    if(await carregarDadosMaisRecentes()){
+      migrarCodigosFvsTrocados();
+      sincronizarItensCatalogoFvs();
+    }
+  }catch(e){ console.warn("Falha ao carregar dados do IndexedDB:", e); }
   try{
     if(await migrarFotosParaImagens(db)) saveDB(db);
   }catch(e){ /* sem IndexedDB: as fotos continuam como estão */ }
