@@ -229,6 +229,14 @@ import {
     return !!reg && reg.h !== hashConteudo(f);
   }
 
+  // ---------- desempenho em obras grandes ----------
+  // Conferir "o que mudou" calculando a assinatura estável de cada FVS a cada salvamento
+  // fica caro numa obra com milhares de FVS. Guardamos, para cada objeto (FVS, ambiente),
+  // o texto JSON da última conferência: se o texto atual é idêntico, o objeto não mudou e
+  // a conferência cara é pulada. JSON.stringify e a comparação de textos são rápidos.
+  const jsonConferidoFvs = new WeakMap();   // FVS -> JSON na última conferência (carimbo)
+  const jsonEnviadoAmb = new WeakMap();     // ambiente -> JSON igual ao que está na nuvem
+
   // Roda a cada saveDB(): carimba as FVS que mudaram e registra as que foram removidas.
   function carimbarAlteracoes(){
     const agora = Date.now();
@@ -241,13 +249,20 @@ import {
       (amb.fvsList || []).forEach(f=>{
         if(!f.instId) return;
         vistas.add(f.instId);
-        const h = hashConteudo(f);
         const reg = hashSalvo[f.instId];
+        const cru = JSON.stringify(f);
+        if(reg && jsonConferidoFvs.get(f) === cru){
+          // não mudou desde a última conferência
+          if(reg.a !== chave) reg.a = chave;
+          return;
+        }
+        const h = hashConteudo(f);
         if(!reg || reg.h !== h){
           f.atualizadoEm = agora;
           if(email) f.atualizadoPor = email;
         }
         hashSalvo[f.instId] = { h, a: chave };
+        jsonConferidoFvs.set(f, JSON.stringify(f));
       });
     });
     Object.keys(hashSalvo).forEach(id=>{
@@ -304,7 +319,10 @@ import {
     local.fvsList = resultado;
     if(Object.keys(removidas).length) local.fvsRemovidas = removidas;
     persistirHashSalvo();
-    return hashConteudo(local) !== hashConteudo(remoto);
+    const precisaReenviar = hashConteudo(local) !== hashConteudo(remoto);
+    if(precisaReenviar) jsonEnviadoAmb.delete(local);
+    else jsonEnviadoAmb.set(local, JSON.stringify(local));
+    return precisaReenviar;
   }
 
   // O que a nuvem tem de cada documento (hash do conteúdo, sem as datas). Só envia o
@@ -312,11 +330,14 @@ import {
   const hashNuvem = {};
 
   function pavimentoLeve(pav){
-    const limpo = cloneSeguro(pav);
-    limpo.ambientes = (limpo.ambientes || []).map(semFvsList);
-    (limpo.unidades || []).forEach(u=>{ u.ambientes = (u.ambientes || []).map(semFvsList); });
-    (limpo.estrutura || []).forEach(c=>{ c.elementos = (c.elementos || []).map(semFvsList); });
-    return limpo;
+    // Monta a versão leve direto do original (sem clonar antes as FVS, que são pesadas).
+    const { ambientes, unidades, estrutura, ...resto } = pav;
+    const leve = Object.assign({}, resto, {
+      ambientes: (ambientes || []).map(semFvsList),
+      unidades: (unidades || []).map(u=>Object.assign({}, u, { ambientes: (u.ambientes || []).map(semFvsList) })),
+      estrutura: (estrutura || []).map(c=>Object.assign({}, c, { elementos: (c.elementos || []).map(semFvsList) }))
+    });
+    return cloneSeguro(leve);
   }
 
   // Lista cada "slot" de foto da obra (obra.foto, obra.fotoCapa, cada foto de cada
@@ -385,8 +406,9 @@ import {
     const email = usuarioAtual.email;
 
     try{
-      const obraLeve = cloneSeguro(obra);
-      obraLeve.pavimentos = (obraLeve.pavimentos || []).map(p=>({ id: p.id, nome: p.nome }));
+      const { pavimentos: _pavs, ...obraSemPavimentos } = obra;
+      const obraLeve = cloneSeguro(obraSemPavimentos);
+      obraLeve.pavimentos = (obra.pavimentos || []).map(p=>({ id: p.id, nome: p.nome }));
       const h = hashConteudo(obraLeve);
       if(hashNuvem["o/" + obra.id] !== h){
         obra.atualizadoEm = obraLeve.atualizadoEm = Date.now();
@@ -418,13 +440,17 @@ import {
 
       for(const amb of window.todosAmbientesDoPavimento(pav)){
         try{
-          const copia = cloneSeguro(amb);
-          const h = hashConteudo(copia);
-          if(hashNuvem["a/" + obra.id + "/" + amb.id] !== h){
-            amb.atualizadoEm = copia.atualizadoEm = Date.now();
-            amb.atualizadoPor = copia.atualizadoPor = email;
-            await setDoc(doc(firestoreDb, "obras", obra.id, "ambientes", amb.id), copia);
-            hashNuvem["a/" + obra.id + "/" + amb.id] = h;
+          const cru = JSON.stringify(amb);
+          if(jsonEnviadoAmb.get(amb) !== cru){
+            const copia = JSON.parse(cru);
+            const h = hashConteudo(copia);
+            if(hashNuvem["a/" + obra.id + "/" + amb.id] !== h){
+              amb.atualizadoEm = copia.atualizadoEm = Date.now();
+              amb.atualizadoPor = copia.atualizadoPor = email;
+              await setDoc(doc(firestoreDb, "obras", obra.id, "ambientes", amb.id), copia);
+              hashNuvem["a/" + obra.id + "/" + amb.id] = h;
+            }
+            jsonEnviadoAmb.set(amb, JSON.stringify(amb));
           }
           ambientesRemotosConhecidos.add(obra.id + "/" + amb.id);
         }catch(e){
@@ -730,10 +756,14 @@ import {
         if(!obra){ ambientesOrfaos.push({ obraId, amb: remotoAmb }); return; }
         const local = localizarAmbiente(obra, remotoAmb.id);
         if(!local){ ambientesOrfaos.push({ obraId, amb: remotoAmb }); return; }
-        hashNuvem["a/" + obraId + "/" + remotoAmb.id] = hashConteudo(remotoAmb);
-        const antes = hashConteudo(local);
+        const hRemoto = hashConteudo(remotoAmb);
+        const chaveNuvem = "a/" + obraId + "/" + remotoAmb.id;
+        const ecoDoQueEnviei = hashNuvem[chaveNuvem] === hRemoto && jsonEnviadoAmb.get(local) === JSON.stringify(local);
+        hashNuvem[chaveNuvem] = hRemoto;
+        if(ecoDoQueEnviei) return;
+        const antes = JSON.stringify(local);
         if(mesclarAmbiente(obraId, local, remotoAmb)) precisaReenviar = true;
-        if(hashConteudo(local) !== antes) mudouLocal = true;
+        if(JSON.stringify(local) !== antes) mudouLocal = true;
       });
       if(mudouLocal){ salvarLocal(); if(typeof window.render === "function") window.render(); }
       if(precisaReenviar) agendarSincronizacao();
