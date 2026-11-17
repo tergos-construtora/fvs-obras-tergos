@@ -1038,6 +1038,7 @@ function abrirListaPorCategoria3D(obra, pareamento, categoria, labelCategoria){
   });
 }
 
+const _ifcDownloads = {};
 function cardModelo3D(obra){
   const card = document.createElement("div");
   card.className="chart-card";
@@ -1047,8 +1048,31 @@ function cardModelo3D(obra){
   card.appendChild(body);
 
   (async ()=>{
-    let bytes = null;
-    try{ bytes = await carregarIfcBytes(obra.id); }catch(e){}
+    let bytes = null, versaoLocal = null;
+    try{ bytes = await carregarIfcBytes(obra.id); versaoLocal = await carregarIfcBytes(obra.id + ":versao"); }catch(e){}
+    const versaoNuvem = obra.ifcVersao || null;
+    const nuvemDisponivel = typeof window.buscarIfcNuvem === "function" && typeof window.fvsLogado === "function" && window.fvsLogado();
+
+    if(versaoNuvem && versaoLocal !== versaoNuvem && nuvemDisponivel){
+      // Modelo novo (ou ainda não baixado) na nuvem: baixa e guarda neste aparelho.
+      body.innerHTML = `<div style="font-size:13px;color:var(--muted);padding:20px 0;text-align:center;">Baixando modelo 3D da nuvem...</div>`;
+      // Evita baixar o mesmo modelo várias vezes se a tela for redesenhada durante o download.
+      const chaveDl = obra.id + ":" + versaoNuvem;
+      if(!_ifcDownloads[chaveDl]) _ifcDownloads[chaveDl] = window.buscarIfcNuvem(obra.id).catch(()=>null);
+      const baixado = await _ifcDownloads[chaveDl];
+      if(baixado){
+        bytes = baixado;
+        try{ await salvarIfcBytes(obra.id, bytes); await salvarIfcBytes(obra.id + ":versao", versaoNuvem); }catch(e){}
+      }
+    } else if(!versaoNuvem && versaoLocal && bytes){
+      // O modelo foi removido em outro aparelho ("Trocar modelo"): remove a cópia daqui também.
+      try{ await limparIfcBytes(obra.id); await limparIfcBytes(obra.id + ":versao"); }catch(e){}
+      bytes = null;
+    } else if(!versaoNuvem && bytes && nuvemDisponivel){
+      // Modelo importado antes da sincronização (só existia neste aparelho): envia para a nuvem.
+      enviarModeloIfcParaNuvem(obra, bytes, null);
+    }
+
     if(bytes) renderVisualizador3D(body, obra, bytes);
     else renderPromptImportarIFC(body, obra);
   })();
@@ -1071,11 +1095,33 @@ function renderPromptImportarIFC(body, obra){
     try{
       const bytes = new Uint8Array(await file.arrayBuffer());
       await salvarIfcBytes(obra.id, bytes);
+      try{ await limparIfcBytes(obra.id + ":versao"); }catch(e){}
       renderVisualizador3D(body, obra, bytes);
+      enviarModeloIfcParaNuvem(obra, bytes, status);
     }catch(e){
       status.textContent = "Não consegui ler esse arquivo.";
     }
   };
+}
+
+// O modelo IFC fica guardado neste aparelho (para abrir rápido e funcionar sem internet)
+// e também na nuvem (Storage), para aparecer em todos os aparelhos da equipe.
+// obra.ifcVersao (sincronizado com a obra) diz qual é a versão atual do modelo.
+async function enviarModeloIfcParaNuvem(obra, bytes, statusEl){
+  if(typeof window.enviarIfcNuvem !== "function" || typeof window.fvsLogado !== "function" || !window.fvsLogado()){
+    if(statusEl) statusEl.textContent = "Modelo salvo neste aparelho. Ele será enviado para a nuvem quando você estiver conectado à sua conta.";
+    return;
+  }
+  try{
+    const versao = Date.now();
+    await window.enviarIfcNuvem(obra.id, bytes);
+    await salvarIfcBytes(obra.id + ":versao", versao);
+    obra.ifcVersao = versao;
+    saveDB(db);
+  }catch(e){
+    console.warn("Falha ao enviar o modelo IFC para a nuvem:", e);
+    alert("O modelo 3D foi salvo neste aparelho, mas não consegui enviá-lo para a nuvem agora (" + ((e && e.code) || (e && e.message) || "erro") + "). Ele será enviado de novo na próxima vez que a obra for aberta com internet.");
+  }
 }
 
 async function renderVisualizador3D(body, obra, bytes){
@@ -1179,8 +1225,12 @@ function renderizarCena3D(body, obra, pareamento, elementoParaStorey, ifcAPI, mo
     <div class="ifc-canvas-wrap" style="position:relative;width:100%;height:340px;border-radius:8px;overflow:hidden;background:#dfe0e6;"></div>
   `;
   body.querySelector(".ifc-trocar").onclick=()=>{
-    obra.ifcStoreyMap = null; saveDB(db);
+    obra.ifcStoreyMap = null;
+    obra.ifcVersao = null;
+    saveDB(db);
     limparIfcBytes(obra.id);
+    limparIfcBytes(obra.id + ":versao");
+    if(typeof window.excluirIfcNuvem === "function") window.excluirIfcNuvem(obra.id);
     renderPromptImportarIFC(body, obra);
   };
   const LABELS_CATEGORIA_3D = {completo:"Completo", andamento:"Em andamento", nc:"Com NC", sem_dado:"Sem dado"};
