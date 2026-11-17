@@ -25,6 +25,9 @@ import {
 } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-storage.js";
 
 (async function iniciarSincronizacaoNuvem(){
+  // Espera o app terminar de carregar os dados guardados no aparelho (IndexedDB) antes de
+  // sincronizar, para nunca comparar com a nuvem uma cópia incompleta.
+  try{ await window.fvsDadosProntos; }catch(e){}
   let app, auth, firestoreDb, storage;
   try{
     app = initializeApp(window.FIREBASE_CONFIG);
@@ -508,7 +511,10 @@ import {
   }
 
   function salvarLocal(){
-    try{ localStorage.setItem("qualitab_obra_v1", JSON.stringify(window.db)); }catch(e){ /* ignora: já estava salvo localmente antes */ }
+    try{
+      if(typeof window.persistirDadosLocais === "function") window.persistirDadosLocais(window.db);
+      else localStorage.setItem("qualitab_obra_v1", JSON.stringify(window.db));
+    }catch(e){ /* ignora: já estava salvo localmente antes */ }
   }
 
   // Depois que os três listeners (obras/pavimentos/ambientes) entregaram sua primeira
