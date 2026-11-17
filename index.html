@@ -370,24 +370,39 @@ function loadDB(){
   catch(e){ return { obras: [] }; }
 }
 // Salva no aparelho (sem disparar a sincronização com a nuvem).
-function persistirDadosLocais(db){
+// Vários salvamentos seguidos (ex.: marcar vários itens rápido) são agrupados numa única
+// gravação logo em seguida, em vez de transformar a obra inteira em texto a cada clique.
+// Ao sair/ocultar o app, qualquer gravação pendente é feita na hora.
+const LIMITE_LOCALSTORAGE = 4500000; // caracteres; acima disso o localStorage recusa
+let _timerPersistir = null, _dbPendente = null;
+function gravarAgora(){
+  clearTimeout(_timerPersistir); _timerPersistir = null;
+  const db = _dbPendente; _dbPendente = null;
+  if(!db) return;
   const salvoEm = Date.now();
   let json;
-  try{ json = JSON.stringify(db); }catch(e){ return false; }
-  let soNoIdb = false;
-  try{
-    localStorage.setItem(STORAGE_KEY, json);
-  }catch(e){
-    // Não coube no localStorage: apaga a cópia antiga de lá (para não ser lida por engano
+  try{ json = JSON.stringify(db); }catch(e){ return; }
+  let soNoIdb = json.length > LIMITE_LOCALSTORAGE;
+  if(!soNoIdb){
+    try{ localStorage.setItem(STORAGE_KEY, json); }
+    catch(e){ soNoIdb = true; }
+  }
+  if(soNoIdb){
+    // Não cabe no localStorage: apaga a cópia antiga de lá (para não ser lida por engano
     // e para liberar espaço) e fica valendo só a do IndexedDB.
-    soNoIdb = true;
     try{ localStorage.removeItem(STORAGE_KEY); }catch(e2){}
   }
   try{ localStorage.setItem(STORAGE_KEY_SALVO_EM, String(salvoEm)); }catch(e){}
   _gravacaoPendente = { salvoEm, json, soNoIdb };
   processarGravacaoIdb();
+}
+function persistirDadosLocais(db){
+  _dbPendente = db;
+  if(!_timerPersistir) _timerPersistir = setTimeout(gravarAgora, 400);
   return true;
 }
+window.addEventListener("pagehide", gravarAgora);
+document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState === "hidden") gravarAgora(); });
 window.persistirDadosLocais = persistirDadosLocais;
 function saveDB(db){
   return persistirDadosLocais(db);
