@@ -1958,39 +1958,6 @@ window.FVS_SUBCHECKS = {
     ]
   },
 
-  "FVS-30|00": {
-    "Estrutura de sustentação (arames/tirantes) nivelada e firme": [
-      "Espaçamento entre pontos de suspensão conforme especificação (ex.: máx. 1,0 a 1,2 m)",
-      "Nível da estrutura conferido com mangueira/laser em todo o ambiente",
-      "Ancoragem dos tirantes na laje/estrutura firme, sem risco de soltura",
-      "Ausência de flecha perceptível entre pontos de suspensão"
-    ],
-    "Encaixe e alinhamento das placas de gesso": [
-      "Encaixe macho-fêmea das placas ajustado, sem frestas visíveis",
-      "Alinhamento das juntas entre placas conferido com linha/régua",
-      "Ausência de placas trincadas ou quebradas na instalação",
-      "Modulação das placas conforme projeto, com cortes mínimos nas bordas"
-    ],
-    "Tratamento de juntas com massa e fita": [
-      "Fita aplicada em todas as juntas entre placas",
-      "Massa para junta aplicada em demãos suficientes para nivelar com a placa",
-      "Lixamento final sem expor a fita ou gerar depressão na junta",
-      "Acabamento liso e pronto para pintura"
-    ],
-    "Recortes para luminárias e pontos de instalação conferidos": [
-      "Recortes dimensionados conforme equipamento a instalar",
-      "Posição conferida com projeto de iluminação/instalações antes do corte",
-      "Ausência de trincas propagadas a partir dos recortes",
-      "Reforço ao redor de recortes de maior dimensão, quando necessário"
-    ],
-    "Nível final do forro e platibandas/sancas conferidos": [
-      "Nível do forro conferido em múltiplos pontos do ambiente",
-      "Alinhamento com sancas e rebaixos conforme projeto",
-      "Ausência de desnível perceptível entre placas",
-      "Estabilidade do forro conferida (sem flexão ao toque leve)"
-    ]
-  },
-
   "FVS-31|00": {
     "Estrutura metálica (guias e montantes) fixada e nivelada": [
       "Guias fixadas em piso e teto alinhadas com o projeto",
