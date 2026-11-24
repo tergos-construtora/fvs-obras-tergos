@@ -21,7 +21,7 @@ import {
   collection, collectionGroup, doc, setDoc, deleteDoc, onSnapshot, getFirestore, getDocs
 } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-firestore.js";
 import {
-  getStorage, ref as storageRef, uploadBytes, getDownloadURL, deleteObject
+  getStorage, ref as storageRef, uploadBytes, getDownloadURL, deleteObject, getMetadata
 } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-storage.js";
 
 (async function iniciarSincronizacaoNuvem(){
@@ -95,10 +95,39 @@ import {
     return "obras/" + obraId + "/fotos/" + shortId + ".jpg";
   }
 
+  // ---------- controle das fotos que já estão na nuvem ----------
+  // Antes, a cada abertura do app TODAS as fotos do aparelho eram abertas em resolução
+  // cheia e reenviadas (10 ao mesmo tempo). Com muitas fotos isso estourava a memória do
+  // celular: o sistema fechava o app sem parar e o que estava sendo registrado se perdia.
+  // Agora cada foto confirmada na nuvem fica anotada aqui e não é reenviada.
+  const CHAVE_FOTOS_NUVEM = "fvs_fotos_nuvem_v1";
+  let fotosNaNuvem;
+  try{ fotosNaNuvem = new Set(JSON.parse(localStorage.getItem(CHAVE_FOTOS_NUVEM) || "[]")); }
+  catch(e){ fotosNaNuvem = new Set(); }
+  let timerFotosNuvem = null;
+  function marcarFotoNaNuvem(caminho){
+    fotosNaNuvem.add(caminho);
+    clearTimeout(timerFotosNuvem);
+    timerFotosNuvem = setTimeout(()=>{
+      try{ localStorage.setItem(CHAVE_FOTOS_NUVEM, JSON.stringify([...fotosNaNuvem])); }catch(e){}
+    }, 1000);
+  }
+  // Troca, no aparelho, a foto original (pesada, direto da câmera) pela versão
+  // comprimida: ocupa muito menos espaço e memória ao exibir.
+  async function guardarComprimidaNoAparelho(idIdb, original, comprimida){
+    try{
+      if(comprimida && comprimida !== original && original instanceof Blob && comprimida.size < original.size)
+        await window.gravarImagemIdb(idIdb, comprimida);
+    }catch(e){ /* mantém a original */ }
+  }
+
   window.enviarFotoNuvem = async function(obraId, shortId, arquivo){
-    if(!usuarioAtual) return;
     const comprimida = await comprimirImagem(arquivo);
-    await uploadBytes(storageRef(storage, caminhoFoto(obraId, shortId)), comprimida);
+    await guardarComprimidaNoAparelho(obraId + ":" + shortId, arquivo, comprimida);
+    if(!usuarioAtual) return;
+    const caminho = caminhoFoto(obraId, shortId);
+    await uploadBytes(storageRef(storage, caminho), comprimida);
+    marcarFotoNaNuvem(caminho);
   };
   window.buscarFotoNuvem = async function(obraId, shortId){
     if(!usuarioAtual) return null;
@@ -379,17 +408,30 @@ import {
   // neste aparelho — reenviar algo que já está lá não tem custo real.
   async function garantirFotosNaNuvem(obra){
     let mudouReferencia = false;
-    await processarComLimite(listarSlotsDeImagem(obra), 10, async (alvo)=>{
+    await processarComLimite(listarSlotsDeImagem(obra), 2, async (alvo)=>{
       const ref = alvo.get();
       if(!window.ehRefImagem(ref)) return;
       const [obraIdNaRef, shortId] = window.obraIdDaRef(ref);
       const obraIdAlvo = obraIdNaRef || obra.id;
+      const caminho = caminhoFoto(obraIdAlvo, shortId);
+      const ajustarRef = ()=>{ if(!obraIdNaRef){ mudouReferencia = true; alvo.set("img:" + obraIdAlvo + ":" + shortId); } };
       try{
-        const arquivo = await window.lerImagemIdb(window.idDaRef(ref));
+        if(fotosNaNuvem.has(caminho)){ ajustarRef(); return; } // já confirmada antes
+        // Confere se já está na nuvem (consulta leve, sem abrir a foto).
+        try{
+          await getMetadata(storageRef(storage, caminho));
+          marcarFotoNaNuvem(caminho); ajustarRef(); return;
+        }catch(e){
+          if(!e || e.code !== "storage/object-not-found") return; // sem internet etc.: tenta depois
+        }
+        const idIdb = window.idDaRef(ref);
+        const arquivo = await window.lerImagemIdb(idIdb);
         if(!arquivo) return; // não existe neste aparelho — nada a fazer aqui
         const comprimida = await comprimirImagem(arquivo);
-        await uploadBytes(storageRef(storage, "obras/" + obraIdAlvo + "/fotos/" + shortId + ".jpg"), comprimida);
-        if(!obraIdNaRef){ mudouReferencia = true; alvo.set("img:" + obraIdAlvo + ":" + shortId); }
+        await uploadBytes(storageRef(storage, caminho), comprimida);
+        marcarFotoNaNuvem(caminho);
+        await guardarComprimidaNoAparelho(idIdb, arquivo, comprimida);
+        ajustarRef();
       }catch(e){ /* mantém a referência como estava, tenta de novo na próxima */ }
     });
     return mudouReferencia;
@@ -701,7 +743,7 @@ import {
       estadoSync = "sincronizado";
       primeiroSnapObras = true;
       tentarVerificacaoCompleta();
-      tentarMigrarFotosAntigas();
+      setTimeout(tentarMigrarFotosAntigas, 8000);
     }, (erro)=>{
       console.warn("Escuta da nuvem interrompida:", erro);
       estadoSync = "erro";
